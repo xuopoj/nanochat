@@ -128,7 +128,8 @@ for name, fallback, source in [
         print0(f"Using {name}={arg_val}")
 
 orig_model = model
-model = torch.compile(model, dynamic=False)
+compile_backend = "inductor" if device_type == "cuda" else "eager"
+model = torch.compile(model, dynamic=False, backend=compile_backend)
 depth = model.config.n_layer
 num_flops_per_token = model.estimate_flops()
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank

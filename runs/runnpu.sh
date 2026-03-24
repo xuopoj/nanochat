@@ -46,7 +46,7 @@ python -m scripts.tok_train
 # -----------------------------------------------------------------------------
 # Base model pretraining on NPU
 
-$TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.base_train \
+$TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.base_train -- \
     --device-type=npu \
     --depth=24 \
     --target-param-data-ratio=8 \
@@ -54,18 +54,18 @@ $TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.base_train \
     --window-pattern=L \
     --run=$WANDB_RUN
 
-$TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.base_eval \
+$TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.base_eval -- \
     --device-type=npu \
     --device-batch-size=16
 
 # -----------------------------------------------------------------------------
 # SFT (identity conversations must be pre-downloaded into NANOCHAT_BASE_DIR)
 
-$TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.chat_sft \
+$TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.chat_sft -- \
     --device-type=npu \
     --device-batch-size=16 \
     --run=$WANDB_RUN
 
-$TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.chat_eval \
+$TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.chat_eval -- \
     --device-type=npu \
     -i sft
