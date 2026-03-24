@@ -192,6 +192,17 @@ class MuonAdamW(torch.optim.Optimizer):
         self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
+        self._scalar_device = torch.device("cpu")
+
+    def _ensure_scalars_on_device(self, device: torch.device) -> None:
+        """Move 0-D scalar tensors to param device if needed (e.g. NPU rejects CPU scalars)."""
+        if self._scalar_device == device:
+            return
+        self._scalar_device = device
+        for attr in ("_adamw_step_t", "_adamw_lr_t", "_adamw_beta1_t", "_adamw_beta2_t",
+                     "_adamw_eps_t", "_adamw_wd_t", "_muon_momentum_t", "_muon_lr_t",
+                     "_muon_wd_t", "_muon_beta2_t"):
+            setattr(self, attr, getattr(self, attr).to(device))
 
     def _step_adamw(self, group: dict) -> None:
         """
@@ -284,6 +295,8 @@ class MuonAdamW(torch.optim.Optimizer):
 
     @torch.no_grad()
     def step(self):
+        first_param = next(p for g in self.param_groups for p in g['params'])
+        self._ensure_scalars_on_device(first_param.device)
         for group in self.param_groups:
             if group['kind'] == 'adamw':
                 self._step_adamw(group)
@@ -367,6 +380,17 @@ class DistMuonAdamW(torch.optim.Optimizer):
         self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
+        self._scalar_device = torch.device("cpu")
+
+    def _ensure_scalars_on_device(self, device: torch.device) -> None:
+        """Move 0-D scalar tensors to param device if needed (e.g. NPU rejects CPU scalars)."""
+        if self._scalar_device == device:
+            return
+        self._scalar_device = device
+        for attr in ("_adamw_step_t", "_adamw_lr_t", "_adamw_beta1_t", "_adamw_beta2_t",
+                     "_adamw_eps_t", "_adamw_wd_t", "_muon_momentum_t", "_muon_lr_t",
+                     "_muon_wd_t", "_muon_beta2_t"):
+            setattr(self, attr, getattr(self, attr).to(device))
 
     def _reduce_adamw(self, group: dict, world_size: int) -> dict:
         """Launch async reduce ops for AdamW group. Returns info dict with per-param infos."""
@@ -510,6 +534,8 @@ class DistMuonAdamW(torch.optim.Optimizer):
     def step(self):
         rank = dist.get_rank()
         world_size = dist.get_world_size()
+        first_param = next(p for g in self.param_groups for p in g['params'])
+        self._ensure_scalars_on_device(first_param.device)
 
         # Phase 1: launch all async reduce ops
         reduce_infos: list[dict] = []
