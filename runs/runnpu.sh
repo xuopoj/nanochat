@@ -40,7 +40,8 @@ NPROC=${NPROC_PER_NODE:-8}
 # Tokenizer (uses pre-downloaded data, no network calls)
 
 python -m scripts.tok_train
-python -m scripts.tok_eval
+# tok_eval compares against GPT-2/GPT-4 tiktoken encodings which require network access.
+# Skip it in offline environments — it's informational only, not required for training.
 
 # -----------------------------------------------------------------------------
 # Base model pretraining on NPU
