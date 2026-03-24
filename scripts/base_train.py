@@ -42,7 +42,7 @@ parser = argparse.ArgumentParser(description="Pretrain base model")
 # Logging
 parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('dummy' disables wandb logging)")
 # Runtime
-parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
+parser.add_argument("--device-type", type=str, default="", help="cuda|npu|cpu|mps (empty = autodetect)")
 # FP8 training
 parser.add_argument("--fp8", action="store_true", help="enable FP8 training (requires H100+ GPU and torchao)")
 parser.add_argument("--fp8-recipe", type=str, default="tensorwise", choices=["rowwise", "tensorwise"], help="FP8 scaling recipe: tensorwise (faster, recommended) or rowwise (more accurate but slower)")
@@ -85,12 +85,23 @@ user_config = vars(args).copy()  # for logging
 device_type = autodetect_device_type() if args.device_type == "" else args.device_type
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
 master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
-synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
-get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
+if device_type == "cuda":
+    synchronize = torch.cuda.synchronize
+    get_max_memory = torch.cuda.max_memory_allocated
+elif device_type == "npu":
+    synchronize = torch.npu.synchronize
+    get_max_memory = torch.npu.max_memory_allocated
+else:
+    synchronize = lambda: None
+    get_max_memory = lambda: 0
 if device_type == "cuda":
     gpu_device_name = torch.cuda.get_device_name(0)
     gpu_peak_flops = get_peak_flops(gpu_device_name)
     print0(f"GPU: {gpu_device_name} | Peak FLOPS (BF16): {gpu_peak_flops:.2e}")
+elif device_type == "npu":
+    gpu_device_name = torch.npu.get_device_name(0)
+    gpu_peak_flops = get_peak_flops(gpu_device_name)
+    print0(f"NPU: {gpu_device_name} | Peak FLOPS (BF16): {gpu_peak_flops:.2e}")
 else:
     gpu_peak_flops = float('inf')  # MFU not meaningful for CPU/MPS
 print0(f"COMPUTE_DTYPE: {COMPUTE_DTYPE} ({COMPUTE_DTYPE_REASON})")

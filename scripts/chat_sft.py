@@ -38,7 +38,7 @@ parser = argparse.ArgumentParser(description="Supervised fine-tuning (SFT) the m
 # Logging
 parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('dummy' disables wandb logging)")
 # Runtime
-parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
+parser.add_argument("--device-type", type=str, default="", help="cuda|npu|cpu|mps (empty = autodetect)")
 # Model loading
 parser.add_argument("--model-tag", type=str, default=None, help="model tag to load from")
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
@@ -75,12 +75,23 @@ device_type = autodetect_device_type() if args.device_type == "" else args.devic
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
 master_process = ddp_rank == 0
 print0(f"COMPUTE_DTYPE: {COMPUTE_DTYPE} ({COMPUTE_DTYPE_REASON})")
-synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
-get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
+if device_type == "cuda":
+    synchronize = torch.cuda.synchronize
+    get_max_memory = torch.cuda.max_memory_allocated
+elif device_type == "npu":
+    synchronize = torch.npu.synchronize
+    get_max_memory = torch.npu.max_memory_allocated
+else:
+    synchronize = lambda: None
+    get_max_memory = lambda: 0
 if device_type == "cuda":
     gpu_device_name = torch.cuda.get_device_name(0)
     gpu_peak_flops = get_peak_flops(gpu_device_name)
     print0(f"GPU: {gpu_device_name} | Peak FLOPS (BF16): {gpu_peak_flops:.2e}")
+elif device_type == "npu":
+    gpu_device_name = torch.npu.get_device_name(0)
+    gpu_peak_flops = get_peak_flops(gpu_device_name)
+    print0(f"NPU: {gpu_device_name} | Peak FLOPS (BF16): {gpu_peak_flops:.2e}")
 else:
     gpu_peak_flops = float('inf')  # MFU not meaningful for CPU/MPS
 
@@ -284,7 +295,7 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
                 last_step = True
 
         # Build tensors
-        use_cuda = device_type == "cuda"
+        use_cuda = device_type in ("cuda", "npu")
         batch_tensor = torch.tensor(rows, dtype=torch.long, pin_memory=use_cuda)
         inputs = batch_tensor[:, :-1].to(device=device, dtype=torch.int32, non_blocking=use_cuda).contiguous()
         targets = batch_tensor[:, 1:].to(device=device, dtype=torch.int64, non_blocking=use_cuda).contiguous()

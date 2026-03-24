@@ -27,7 +27,13 @@ def _detect_compute_dtype():
         # fp16 training requires GradScaler (not yet implemented), so fall back to fp32.
         # Users can still force fp16 via NANOCHAT_DTYPE=float16 if they know what they're doing.
         return torch.float32, f"auto-detected: CUDA SM {capability[0]}{capability[1]} (pre-Ampere, bf16 not supported, using fp32)"
-    return torch.float32, "auto-detected: no CUDA (CPU/MPS)"
+    try:
+        import torch_npu  # noqa: F401
+        if torch.npu.is_available():
+            return torch.bfloat16, "auto-detected: Ascend NPU (bf16 supported)"
+    except ImportError:
+        pass
+    return torch.float32, "auto-detected: no CUDA/NPU (CPU/MPS)"
 COMPUTE_DTYPE, COMPUTE_DTYPE_REASON = _detect_compute_dtype()
 
 class ColoredFormatter(logging.Formatter):
@@ -160,24 +166,40 @@ def get_dist_info():
         return False, 0, 0, 1
 
 def autodetect_device_type():
-    # prefer to use CUDA if available, otherwise use MPS, otherwise fallback on CPU
+    # prefer to use CUDA if available, then Ascend NPU, then MPS, then CPU
     if torch.cuda.is_available():
         device_type = "cuda"
-    elif torch.backends.mps.is_available():
-        device_type = "mps"
     else:
-        device_type = "cpu"
+        try:
+            import torch_npu  # noqa: F401
+            if torch.npu.is_available():
+                device_type = "npu"
+            elif torch.backends.mps.is_available():
+                device_type = "mps"
+            else:
+                device_type = "cpu"
+        except ImportError:
+            if torch.backends.mps.is_available():
+                device_type = "mps"
+            else:
+                device_type = "cpu"
     print0(f"Autodetected device type: {device_type}")
     return device_type
 
-def compute_init(device_type="cuda"): # cuda|cpu|mps
+def compute_init(device_type="cuda"): # cuda|npu|cpu|mps
     """Basic initialization that we keep doing over and over, so make common."""
 
-    assert device_type in ["cuda", "mps", "cpu"], "Invalid device type atm"
+    assert device_type in ["cuda", "npu", "mps", "cpu"], "Invalid device type atm"
     if device_type == "cuda":
         assert torch.cuda.is_available(), "Your PyTorch installation is not configured for CUDA but device_type is 'cuda'"
     if device_type == "mps":
         assert torch.backends.mps.is_available(), "Your PyTorch installation is not configured for MPS but device_type is 'mps'"
+    if device_type == "npu":
+        try:
+            import torch_npu  # noqa: F401
+        except ImportError:
+            raise ImportError("torch_npu is not installed. Install it to use Ascend NPU.")
+        assert torch.npu.is_available(), "torch_npu is installed but no Ascend NPU was detected"
 
     # Reproducibility
     # Note that we set the global seeds here, but most of the code uses explicit rng objects.
@@ -185,6 +207,8 @@ def compute_init(device_type="cuda"): # cuda|cpu|mps
     torch.manual_seed(42)
     if device_type == "cuda":
         torch.cuda.manual_seed(42)
+    elif device_type == "npu":
+        torch.npu.manual_seed(42)
     # skipping full reproducibility for now, possibly investigate slowdown later
     # torch.use_deterministic_algorithms(True)
 
@@ -192,15 +216,20 @@ def compute_init(device_type="cuda"): # cuda|cpu|mps
     if device_type == "cuda":
         torch.set_float32_matmul_precision("high") # uses tf32 instead of fp32 for matmuls, see https://docs.pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
 
-    # Distributed setup: Distributed Data Parallel (DDP), optional, and requires CUDA
+    # Distributed setup: Distributed Data Parallel (DDP), optional. CUDA uses NCCL, NPU uses HCCL.
     is_ddp_requested, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
     if is_ddp_requested and device_type == "cuda":
         device = torch.device("cuda", ddp_local_rank)
         torch.cuda.set_device(device)  # make "cuda" default to this device
         dist.init_process_group(backend="nccl", device_id=device)
         dist.barrier()
+    elif is_ddp_requested and device_type == "npu":
+        device = torch.device("npu", ddp_local_rank)
+        torch.npu.set_device(device)
+        dist.init_process_group(backend="hccl")
+        dist.barrier()
     else:
-        device = torch.device(device_type) # mps|cpu
+        device = torch.device(device_type) # mps|cpu|npu (single device)
 
     if ddp_rank == 0:
         logger.info(f"Distributed world size: {ddp_world_size}")
@@ -229,6 +258,11 @@ def get_peak_flops(device_name: str) -> float:
 
     # Table order matters: more specific patterns first.
     _PEAK_FLOPS_TABLE = (
+        # Huawei Ascend (Atlas series) — BF16 peak FLOPS
+        (["910b4"], 280e12),   # Ascend 910B4: 280 TFLOPS BF16
+        (["910b"], 313e12),    # Ascend 910B (910B3): 313 TFLOPS BF16
+        (["910"], 256e12),     # Ascend 910: 256 TFLOPS BF16
+        (["310p"], 70e12),     # Ascend 310P: 70 TFLOPS BF16
         # NVIDIA Blackwell
         (["gb200"], 2.5e15),
         (["grace blackwell"], 2.5e15),
