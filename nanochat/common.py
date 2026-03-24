@@ -30,7 +30,7 @@ def _detect_compute_dtype():
     try:
         import torch_npu  # noqa: F401
         if torch.npu.is_available():
-            return torch.bfloat16, "auto-detected: Ascend NPU (bf16 supported)"
+            return torch.float32, "auto-detected: Ascend NPU (using fp32 for compatibility)"
     except ImportError:
         pass
     return torch.float32, "auto-detected: no CUDA/NPU (CPU/MPS)"
