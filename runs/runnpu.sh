@@ -23,13 +23,11 @@ export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$NANOCHAT_BASE_DIR/huggingface/da
 export OMP_NUM_THREADS=1
 mkdir -p $NANOCHAT_BASE_DIR
 
-# -----------------------------------------------------------------------------
-# Python venv setup
-
-command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
-[ -d ".venv" ] || uv venv
-uv sync --extra npu
-source .venv/bin/activate
+# All Python deps are pre-installed in the Docker image — no venv needed.
+# Locate torchrun (pip may install it under ~/.local/bin instead of /usr/bin)
+TORCHRUN=$(find /home/ma-user/.local /usr/local/bin /usr/bin -name torchrun 2>/dev/null | head -1)
+[ -z "$TORCHRUN" ] && TORCHRUN=$(python -c "import sysconfig,os; print(os.path.join(sysconfig.get_path('scripts'),'torchrun'))")
+echo "Using torchrun: $TORCHRUN"
 
 if [ -z "$WANDB_RUN" ]; then
     WANDB_RUN=dummy
@@ -47,7 +45,7 @@ python -m scripts.tok_eval
 # -----------------------------------------------------------------------------
 # Base model pretraining on NPU
 
-torchrun --standalone --nproc_per_node=$NPROC -m scripts.base_train \
+$TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.base_train \
     --device-type=npu \
     --depth=24 \
     --target-param-data-ratio=8 \
@@ -55,18 +53,18 @@ torchrun --standalone --nproc_per_node=$NPROC -m scripts.base_train \
     --window-pattern=L \
     --run=$WANDB_RUN
 
-torchrun --standalone --nproc_per_node=$NPROC -m scripts.base_eval \
+$TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.base_eval \
     --device-type=npu \
     --device-batch-size=16
 
 # -----------------------------------------------------------------------------
 # SFT (identity conversations must be pre-downloaded into NANOCHAT_BASE_DIR)
 
-torchrun --standalone --nproc_per_node=$NPROC -m scripts.chat_sft \
+$TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.chat_sft \
     --device-type=npu \
     --device-batch-size=16 \
     --run=$WANDB_RUN
 
-torchrun --standalone --nproc_per_node=$NPROC -m scripts.chat_eval \
+$TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.chat_eval \
     --device-type=npu \
     -i sft
