@@ -17,9 +17,13 @@ Good old AdamW optimizer, fused kernel.
 https://arxiv.org/abs/1711.05101
 """
 
-_compile_backend = "inductor" if torch.cuda.is_available() else "eager"
+def _maybe_compile(fn):
+    """Apply torch.compile with inductor on CUDA, skip on NPU/CPU (no benefit without triton)."""
+    if torch.cuda.is_available():
+        return torch.compile(fn, dynamic=False, fullgraph=True, backend="inductor")
+    return fn
 
-@torch.compile(dynamic=False, fullgraph=True, backend=_compile_backend)
+@_maybe_compile
 def adamw_step_fused(
     p: Tensor,              # (32768, 768) - parameter tensor
     grad: Tensor,           # (32768, 768) - gradient, same shape as p
@@ -89,7 +93,7 @@ polar_express_coeffs = [
     (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
 ]
 
-@torch.compile(dynamic=False, fullgraph=True, backend=_compile_backend)
+@_maybe_compile
 def muon_step_fused(
     stacked_grads: Tensor,          # (12, 768, 3072) - stacked gradients
     stacked_params: Tensor,         # (12, 768, 3072) - stacked parameters
@@ -192,13 +196,11 @@ class MuonAdamW(torch.optim.Optimizer):
         self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._scalar_device = torch.device("cpu")
 
     def _ensure_scalars_on_device(self, device: torch.device) -> None:
         """Move 0-D scalar tensors to param device if needed (e.g. NPU rejects CPU scalars)."""
-        if self._scalar_device == device:
+        if self._adamw_step_t.device == device:
             return
-        self._scalar_device = device
         for attr in ("_adamw_step_t", "_adamw_lr_t", "_adamw_beta1_t", "_adamw_beta2_t",
                      "_adamw_eps_t", "_adamw_wd_t", "_muon_momentum_t", "_muon_lr_t",
                      "_muon_wd_t", "_muon_beta2_t"):
@@ -380,13 +382,11 @@ class DistMuonAdamW(torch.optim.Optimizer):
         self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
         self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._scalar_device = torch.device("cpu")
 
     def _ensure_scalars_on_device(self, device: torch.device) -> None:
         """Move 0-D scalar tensors to param device if needed (e.g. NPU rejects CPU scalars)."""
-        if self._scalar_device == device:
+        if self._adamw_step_t.device == device:
             return
-        self._scalar_device = device
         for attr in ("_adamw_step_t", "_adamw_lr_t", "_adamw_beta1_t", "_adamw_beta2_t",
                      "_adamw_eps_t", "_adamw_wd_t", "_muon_momentum_t", "_muon_lr_t",
                      "_muon_wd_t", "_muon_beta2_t"):

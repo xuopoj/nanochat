@@ -253,8 +253,10 @@ def disable_fp8(model):
 # Compile the model
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
-compile_backend = "inductor" if device_type == "cuda" else "eager"
-model = torch.compile(model, dynamic=False, backend=compile_backend)
+if device_type == "cuda":
+    model = torch.compile(model, dynamic=False, backend="inductor")
+elif device_type != "npu":
+    model = torch.compile(model, dynamic=False, backend="eager")
 
 # -----------------------------------------------------------------------------
 # Scaling laws and muP extrapolations to determine the optimal training horizon, batch size, learning rates, weight decay.
@@ -329,6 +331,11 @@ optimizer = model.setup_optimizer(
 if resuming:
     optimizer.load_state_dict(optimizer_data)
     del optimizer_data
+    if device_type == "npu":
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor) and v.is_floating_point():
+                    state[k] = v.to(dtype=COMPUTE_DTYPE)
 
 # -----------------------------------------------------------------------------
 # GradScaler for fp16 training (bf16/fp32 don't need it — bf16 has the same exponent range as fp32)

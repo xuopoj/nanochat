@@ -63,7 +63,8 @@ $TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.base_eval -- \
 
 $TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.chat_sft -- \
     --device-type=npu \
-    --device-batch-size=16 \
+    --device-batch-size=4 \
+    --load-optimizer=0 \
     --run=$WANDB_RUN
 
 $TORCHRUN --standalone --nproc_per_node=$NPROC -m scripts.chat_eval -- \

@@ -128,8 +128,10 @@ for name, fallback, source in [
         print0(f"Using {name}={arg_val}")
 
 orig_model = model
-compile_backend = "inductor" if device_type == "cuda" else "eager"
-model = torch.compile(model, dynamic=False, backend=compile_backend)
+if device_type == "cuda":
+    model = torch.compile(model, dynamic=False, backend="inductor")
+elif device_type != "npu":
+    model = torch.compile(model, dynamic=False, backend="eager")
 depth = model.config.n_layer
 num_flops_per_token = model.estimate_flops()
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
@@ -156,9 +158,15 @@ if args.load_optimizer:
         base_lrs = [group["lr"] for group in optimizer.param_groups]
         optimizer.load_state_dict(optimizer_data)
         del optimizer_data
+        if device_type == "npu":
+            # NPU requires fp32 momentum buffers; CUDA checkpoints may store bf16
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor) and v.is_floating_point():
+                        state[k] = v.to(dtype=COMPUTE_DTYPE)
         for group, base_lr in zip(optimizer.param_groups, base_lrs):
             group["lr"] = base_lr
-        print0("Loaded optimizer state from pretrained checkpoint (momentum buffers only, LRs reset)")
+        print0(f"Loaded optimizer state from pretrained checkpoint (momentum buffers cast to {COMPUTE_DTYPE}, LRs reset)")
     else:
         print0("WARNING: optimizer checkpoint not found, starting with fresh optimizer (slightly worse)")
 
@@ -224,8 +232,9 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         nonlocal cursor, epoch
         while len(conv_buffer) < buffer_size:
             conversation = dataset[cursor]
-            ids, mask = tokenizer.render_conversation(conversation)
-            conv_buffer.append((ids, mask))
+            ids, mask = tokenizer.render_conversation(conversation, max_tokens=args.max_seq_len)
+            if any(mask):  # skip conversations with no assistant tokens after truncation
+                conv_buffer.append((ids, mask))
             cursor += ddp_world_size
             if cursor >= dataset_size:
                 cursor = cursor % dataset_size
@@ -296,7 +305,7 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
                 last_step = True
 
         # Build tensors
-        use_cuda = device_type in ("cuda", "npu")
+        use_cuda = (device_type == "cuda")  # NPU doesn't support pin_memory reliably
         batch_tensor = torch.tensor(rows, dtype=torch.long, pin_memory=use_cuda)
         inputs = batch_tensor[:, :-1].to(device=device, dtype=torch.int32, non_blocking=use_cuda).contiguous()
         targets = batch_tensor[:, 1:].to(device=device, dtype=torch.int64, non_blocking=use_cuda).contiguous()
@@ -309,7 +318,7 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         targets[mask_targets == 0] = -1
 
         # Mask out padding positions in targets (set to -1 = ignore_index)
-        # For each row, positions >= (content_length - 1) in targets should be masked
+        # targets[i, j] = row[j+1]; padding starts at row[content_len], so targets[i, content_len-1:]
         for i, content_len in enumerate(row_lengths):
             if content_len < row_capacity:
                 targets[i, content_len-1:] = -1
